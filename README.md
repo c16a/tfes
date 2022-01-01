@@ -1,2 +1,2 @@
-# flash
-A tiny and fast messaging system
+# tfes
+A tiny and fast eventing system
