@@ -1,7 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"github.com/tfes-dev/tfes/pkg/net"
+)
 
 func main() {
-	fmt.Println("Hello World")
+	tcpPool := net.NewTcpHandlerPool()
+	tcpPool.Start()
 }
