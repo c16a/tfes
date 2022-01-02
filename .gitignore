@@ -20,3 +20,6 @@
 
 # VS Code files
 .vscode/
+
+# Temp files
+tmp/

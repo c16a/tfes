@@ -15,17 +15,21 @@ import (
 type TcpHandlerPool struct {
 	// Clients only has a list of clients who have subscribed to at least one topic
 	// Other clients who are simply connected need not be tracked, for now.
-	Clients []*schemas.ClientConnection
+	Clients    []*schemas.ClientConnection
+	PeerServer *PeerServer
+	config     *schemas.Config
 }
 
-func NewTcpHandlerPool() *TcpHandlerPool {
+func NewTcpHandlerPool(config *schemas.Config, peerServer *PeerServer) *TcpHandlerPool {
 	return &TcpHandlerPool{
-		Clients: make([]*schemas.ClientConnection, 0),
+		config:     config,
+		PeerServer: peerServer,
+		Clients:    make([]*schemas.ClientConnection, 0),
 	}
 }
 
 func (pool *TcpHandlerPool) Start() error {
-	listener, err := net.Listen("tcp", ":5555")
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", pool.config.Server.Address, pool.config.Server.Port))
 	if err != nil {
 		return err
 	}
@@ -114,12 +118,17 @@ func (pool *TcpHandlerPool) handleConnect(msg *schemas.Message, cc *schemas.Clie
 }
 
 func (pool *TcpHandlerPool) handlePublish(msg *schemas.Message, cc *schemas.ClientConnection) *schemas.Message {
+	pool.PeerServer.notifyPub(msg)
 	for _, _cc := range pool.Clients {
 		go func(_cc *schemas.ClientConnection) {
 			checkAndSendToClient(msg, _cc)
 		}(_cc)
 	}
 	return returnSuccessAck()
+}
+
+func (pool *TcpHandlerPool) handleIncomingPeerPublish(msg *schemas.Message) {
+
 }
 
 func checkAndSendToClient(msg *schemas.Message, cc *schemas.ClientConnection) {
