@@ -144,12 +144,27 @@ func (pool *TcpHandlerPool) handleSubscribe(msg *schemas.Message, cc *schemas.Cl
 	if len(cc.SubscribedSubjects) == 0 {
 		cc.SubscribedSubjects = make([]string, 0)
 	}
-	cc.SubscribedSubjects = append(cc.SubscribedSubjects, subscribe.Subjects...)
+	cc.SubscribedSubjects = append(cc.SubscribedSubjects, subscribe.Subject)
 	return returnSuccessAck()
 }
 
 func (pool *TcpHandlerPool) handleUnsubscribe(msg *schemas.Message, cc *schemas.ClientConnection) *schemas.Message {
+	unsubscribe := msg.Unsubscribe
+	index := -1
+	for i, subject := range cc.SubscribedSubjects {
+		if subject == unsubscribe.Subject {
+			index = i
+		}
+	}
+	if index >= -1 {
+		cc.SubscribedSubjects = remove(cc.SubscribedSubjects, index)
+	}
 	return returnSuccessAck()
+}
+
+func remove(slice []string, i int) []string {
+	copy(slice[i:], slice[i+1:])
+	return slice[:len(slice)-1]
 }
 
 func returnErrorAck(err error) *schemas.Message {

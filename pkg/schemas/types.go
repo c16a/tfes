@@ -53,11 +53,11 @@ func (publish *Publish) ToBounty() *Bounty {
 }
 
 type Subscribe struct {
-	Subjects []string `json:"subjects"` // The list of Subjects to subscribe to
+	Subject string `json:"subject"` // The list of Subject to subscribe to
 }
 
 type Unsubscribe struct {
-	Subjects []string `json:"subjects"` // The list of Subjects to unsubscribe from
+	Subject string `json:"subject"` // The list of Subjects to unsubscribe from
 }
 
 type Bounty struct {
