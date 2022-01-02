@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/tfes-dev/tfes/pkg/routing"
 	"github.com/tfes-dev/tfes/pkg/schemas"
+	"github.com/tfes-dev/tfes/pkg/utils"
 	"io"
 	"log"
 	"net"
@@ -16,16 +17,25 @@ type TcpHandlerPool struct {
 	// Clients only has a list of clients who have subscribed to at least one topic
 	// Other clients who are simply connected need not be tracked, for now.
 	Clients []*schemas.ClientConnection
+
+	msgsToPeers   chan *schemas.Message
+	msgsFromPeers chan *schemas.Message
+	config        *schemas.Config
 }
 
-func NewTcpHandlerPool() *TcpHandlerPool {
+func NewTcpHandlerPool(config *schemas.Config, msgsToPeers chan *schemas.Message, msgsFromPeers chan *schemas.Message) *TcpHandlerPool {
 	return &TcpHandlerPool{
-		Clients: make([]*schemas.ClientConnection, 0),
+		config:        config,
+		msgsToPeers:   msgsToPeers,
+		msgsFromPeers: msgsFromPeers,
+		Clients:       make([]*schemas.ClientConnection, 0),
 	}
 }
 
 func (pool *TcpHandlerPool) Start() error {
-	listener, err := net.Listen("tcp", ":5555")
+	go pool.listenToInbox()
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", pool.config.Server.Address, pool.config.Server.Port))
 	if err != nil {
 		return err
 	}
@@ -37,6 +47,20 @@ func (pool *TcpHandlerPool) Start() error {
 			continue
 		}
 		go pool.handleConnection(c)
+	}
+}
+
+func (pool *TcpHandlerPool) listenToInbox() {
+	for {
+		select {
+		case msg := <-pool.msgsFromPeers:
+			log.Println("Going to broadcast peer message to clients:", msg.Kind)
+			for _, _cc := range pool.Clients {
+				go func(_cc *schemas.ClientConnection) {
+					checkAndSendToClient(msg, _cc)
+				}(_cc)
+			}
+		}
 	}
 }
 
@@ -60,12 +84,7 @@ func (pool *TcpHandlerPool) handleConnection(conn net.Conn) {
 		response := pool.handleIncomingMessage(data, cc)
 
 		if !cc.SuppressAcks {
-			r, err := json.Marshal(response)
-			if err != nil {
-				log.Println(err)
-			}
-			writer.Write(append(r, '\n'))
-			writer.Flush()
+			utils.WriteToBufio(writer, response)
 		}
 	}
 }
@@ -75,7 +94,7 @@ func (pool *TcpHandlerPool) handleIncomingMessage(data string, cc *schemas.Clien
 	var msg schemas.Message
 	err := json.Unmarshal([]byte(data), &msg)
 	if err != nil {
-		return returnErrorAck(err)
+		return utils.ReturnErrorAck(err)
 	}
 
 	var fn func(*schemas.Message, *schemas.ClientConnection) *schemas.Message
@@ -94,7 +113,7 @@ func (pool *TcpHandlerPool) handleIncomingMessage(data string, cc *schemas.Clien
 		fn = pool.handleUnsubscribe
 		break
 	default:
-		return returnErrorAck(errors.New("unknown message kind"))
+		return utils.ReturnErrorAck(errors.New("unknown message kind"))
 	}
 
 	return fn(&msg, cc)
@@ -110,16 +129,19 @@ func (pool *TcpHandlerPool) handleConnect(msg *schemas.Message, cc *schemas.Clie
 	cc.SuppressAcks = connect.SuppressAcks
 	pool.Clients = append(pool.Clients, cc)
 	log.Println("Connected new client")
-	return returnSuccessAck()
+	return utils.ReturnSuccessAck()
 }
 
 func (pool *TcpHandlerPool) handlePublish(msg *schemas.Message, cc *schemas.ClientConnection) *schemas.Message {
+
 	for _, _cc := range pool.Clients {
 		go func(_cc *schemas.ClientConnection) {
 			checkAndSendToClient(msg, _cc)
 		}(_cc)
 	}
-	return returnSuccessAck()
+
+	pool.msgsToPeers <- msg
+	return utils.ReturnSuccessAck()
 }
 
 func checkAndSendToClient(msg *schemas.Message, cc *schemas.ClientConnection) {
@@ -130,11 +152,7 @@ func checkAndSendToClient(msg *schemas.Message, cc *schemas.ClientConnection) {
 				Header: msg.Header,
 				Bounty: msg.Publish.ToBounty(),
 			}
-
-			r, _ := json.Marshal(m)
-			writer := bufio.NewWriter(cc.TcpConnection)
-			writer.Write(append(r, '\n'))
-			writer.Flush()
+			utils.WriteToIo(cc.TcpConnection, m)
 		}
 	}
 }
@@ -145,38 +163,13 @@ func (pool *TcpHandlerPool) handleSubscribe(msg *schemas.Message, cc *schemas.Cl
 		cc.SubscribedSubjects = make([]string, 0)
 	}
 	cc.SubscribedSubjects = append(cc.SubscribedSubjects, subscribe.Subject)
-	return returnSuccessAck()
+	pool.msgsToPeers <- msg
+	return utils.ReturnSuccessAck()
 }
 
 func (pool *TcpHandlerPool) handleUnsubscribe(msg *schemas.Message, cc *schemas.ClientConnection) *schemas.Message {
 	unsubscribe := msg.Unsubscribe
-	index := -1
-	for i, subject := range cc.SubscribedSubjects {
-		if subject == unsubscribe.Subject {
-			index = i
-		}
-	}
-	if index >= -1 {
-		cc.SubscribedSubjects = remove(cc.SubscribedSubjects, index)
-	}
-	return returnSuccessAck()
-}
-
-func remove(slice []string, i int) []string {
-	copy(slice[i:], slice[i+1:])
-	return slice[:len(slice)-1]
-}
-
-func returnErrorAck(err error) *schemas.Message {
-	return &schemas.Message{
-		Kind: schemas.KindAck,
-		Ack:  &schemas.Ack{Ok: false, Description: err.Error()},
-	}
-}
-
-func returnSuccessAck() *schemas.Message {
-	return &schemas.Message{
-		Kind: schemas.KindAck,
-		Ack:  &schemas.Ack{Ok: true},
-	}
+	cc.SubscribedSubjects = utils.RemoveItem(cc.SubscribedSubjects, unsubscribe.Subject)
+	pool.msgsToPeers <- msg
+	return utils.ReturnSuccessAck()
 }
